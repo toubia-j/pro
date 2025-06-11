@@ -1,0 +1,246 @@
+from imports import *
+
+def extract_columns(filepath, column_index=4):
+    # Lire le fichier CSV avec tabulation
+    df = pd.read_csv(filepath, delimiter="\t")
+    # Extraire la colonne demandée
+    values = df.iloc[:, column_index].values
+    # Reshape en DataFrame 24 colonnes (24 heures)
+    return pd.DataFrame(values.reshape(-1, 24))
+
+
+def extract_and_concat_consommation(city_paths, column_index, prefix):
+    """
+    Extrait des colonnes spécifiques de plusieurs fichiers CSV correspondant à différentes villes,
+    crée un DataFrame pour chaque ville nommé {prefix}{ville}, puis concatène tous les DataFrames
+    dans un seul DataFrame global nommé df_combined_{prefix}.
+
+    """
+    extracted_data = []
+    for city_name, path in city_paths.items():
+        data = extract_columns(path, column_index)
+        globals()[f"{prefix}{city_name}"] = data  # crée une variable globale avec le nom dynamique
+        extracted_data.append(data)
+    combined_df = pd.concat(extracted_data, axis=0).reset_index(drop=True)
+    globals()[f"df_combined_{prefix}"] = combined_df  # variable globale pour le concaténé
+    return combined_df
+
+
+def add_binary_column(df, column_name="heat_on"):
+    """
+    Ajout d'une colonne binaire pour identifier les jours de consommation :
+    - '1' indique un jour "ON" (consommation > 0)
+    - '0' indique un jour "OFF" (consommation = 0)
+    """
+    df[column_name] = (df.drop(columns=[column_name], errors='ignore').sum(axis=1) > 0).astype(int)
+    return df
+
+
+
+def extract_and_store_data(files, prefix, column_index):
+    """
+    Pour chaque fichier dans `files`, extrait toutes les colonnes
+    et les stocke dans des variables globales nommées comme <NomColonne>_<ville>.
+    """
+    for city, path in files.items():
+        data = extract_columns(path, column_index)  # Extraire les données pour chaque ville
+        globals()[f"{prefix}{city}"] = data  # Stocker dans la variable globale
+
+
+
+def extract_and_combine_all(city_groups, prefix_column_map):
+    """
+    Combine toutes les colonnes extraites (ayant le même préfixe) pour le groupe de villes actuel.
+    Exemple : combine Text_agen, Text_albi, etc., en un seul DataFrame : Text_combined_toulouse.
+    """
+    combined_data = {}  # Dictionnaire pour stocker les DataFrames combinés
+
+    # Parcourir les groupes de villes
+    for group_name, files in city_groups.items():
+        # Parcourir les préfixes et indices de colonnes
+        for prefix, col_index in prefix_column_map.items():
+            # Extraire et stocker les données
+            extract_and_store_data(files, prefix, col_index)
+
+            # Combiner les DataFrames pour chaque ville
+            dfs = []
+            for city in files.keys():
+                var_name = f"{prefix}{city}"
+                if var_name in globals():
+                    dfs.append(globals()[var_name])  # Ajouter à la liste des DataFrames à combiner
+
+            if dfs:  # Si des DataFrames existent à combiner
+                combined_name = f"{prefix}combined_{group_name}"  # Nom du DataFrame combiné
+                combined_data[combined_name] = pd.concat(dfs, axis=0).reset_index(drop=True)  # Combinaison des DataFrames
+
+    return combined_data  # Retourner les DataFrames combinés
+
+
+def make_column_names_unique(columns):
+    """
+    Cette fonction rend les noms des colonnes uniques en ajoutant un suffixe aux doublons.
+    """
+    seen = {}
+    result = []
+    for col in columns:
+        # Si la colonne n'a pas encore été vue, l'ajouter telle quelle
+        if col not in seen:
+            seen[col] = 1
+            result.append(col)
+        else:
+            # Sinon, ajouter un suffixe pour la rendre unique
+            seen[col] += 1
+            result.append(f"{col}_{seen[col]}")
+    return result
+
+
+
+
+def downsample_majority_class(df, target_column):
+    """
+    Réduire la classe majoritaire pour qu'elle soit égale au nombre de la classe maximale des autres classes.
+    """
+    # Compter le nombre d'exemples par classe
+    counts = df[target_column].value_counts()
+    # Trouver la classe majoritaire
+    majority_value = counts.idxmax()
+    # Trouver la taille maximale parmi les autres classes
+    max_other = counts.drop(index=majority_value).max()
+    # Sélectionner uniquement la classe majoritaire
+    df_majority = df[df[target_column] == majority_value]
+    # Sous-échantillonnage de la classe majoritaire pour l'équilibrer
+    df_majority_downsampled = resample(df_majority, replace=False, n_samples=max_other, random_state=42)
+    # Sélectionner les autres classes
+    df_others = df[df[target_column] != majority_value]
+    # Concaténer et mélanger les données équilibrées
+    balanced_df = pd.concat([df_majority_downsampled, df_others]).sample(frac=1, random_state=42).reset_index(drop=True)
+    return balanced_df
+
+
+    
+def preprocess_data(Text_combined, clustering_heat, Test_Text_heat, name_combined):
+    """
+    -Cette fonction prépare les données pour un modèle LSTM.
+    -L'équilibrage de la classe majoritaire est effectué uniquement sur les jours prédits, 
+    et n'est pas effectué sur les jours passés utilisés comme entrées (t-1).
+    -La prédiction est faite en fonction des différentes données d'entrée et de consommation,
+    ainsi que du profil réel à t-1 et des différentes données d'entrée et des profils prédits à t.
+    """
+    # Calcul de l'indice de séparation (80% des données)
+    split_index = int(0.8 * len(clustering_heat))
+    # Copie du DataFrame de texte combiné
+    df = Text_combined.copy()
+    # Ajout de la colonne 'heat_on' issue du clustering
+    df['heat_on'] = clustering_heat['heat_on']
+
+    # Vérification des colonnes dupliquées dans df
+    duplicates_df = df.columns[df.columns.duplicated()]
+    # Vérification des colonnes dupliquées dans clustering_heat
+    duplicates_clustering_heat = clustering_heat.columns[clustering_heat.columns.duplicated()]
+    # Si doublons dans df, rendre les noms uniques
+    if len(duplicates_df) > 0:
+        df.columns = make_column_names_unique(df.columns)
+    # Si doublons dans clustering_heat, rendre les noms uniques
+    if len(duplicates_clustering_heat) > 0:
+        clustering_heat.columns = make_column_names_unique(clustering_heat.columns)
+
+    # Sélection des colonnes liées aux clusters
+    cluster_cols = clustering_heat.filter(like='cluster').columns
+    # Assignation des clusters sur la partie train (jours passés)
+    df.loc[:split_index - 1, cluster_cols] = clustering_heat.loc[:split_index - 1, cluster_cols]
+
+    # Sélection des colonnes de prédiction de clusters dans Test_Text_heat
+    cluster_cols2 = Test_Text_heat.filter(like='y_pred_Gradient').columns
+    # Pour chaque cluster prédit, ajout dans df pour la partie test (jours futurs)
+    for cluster_idx in range(1, len(cluster_cols2) + 1):
+        cluster_col_name = f'y_pred_Gradient Boosting_clusters_{cluster_idx}'
+        df.loc[split_index:, f'clusters_{cluster_idx}'] = Test_Text_heat.loc[:, cluster_col_name].values
+
+    # Rendre les noms de colonnes uniques dans df
+    df.columns = make_column_names_unique(df.columns)
+
+    # Ajout de colonnes supplémentaires pour l'équilibrage, avec un ID jour
+    df = pd.concat([pd.Series(range(len(clustering_heat))), df, clustering_heat.iloc[:, :-(len(cluster_cols) + 1)]], axis=1).reset_index(drop=True)
+
+    # Gestion des colonnes dupliquées après concaténation
+    duplicates = df.columns[df.columns.duplicated()]
+    df.columns = make_column_names_unique(df.columns)
+    df.columns = df.columns.astype(str)
+
+    # Application du downsampling sur la classe majoritaire ('heat_on')
+    df2 = downsample_majority_class(df, 'heat_on')
+    df2.columns = make_column_names_unique(df2.columns)
+
+    # Calcul du nombre de blocs en fonction du nom de fichier
+    n_blocks = len(name_combined.split('_combined')[0].split('_'))
+    parts = name_combined.split('_combined')[0].split('_')
+    formatted = ' and '.join(parts)
+    print(f"Prediction based on : {formatted}")
+
+    # Nombre de colonnes température (24h * nombre de blocs)
+    n_temp_cols = 24 * n_blocks
+
+    # Initialisation des scalers pour la température et la consommation
+    scaler_temp = StandardScaler()
+    scaler_cons = StandardScaler()
+
+    # Sélection des colonnes clusters dans df et df2
+    cluster_cols = df.columns[df.columns.str.contains('clusters_')]
+    cluster_cols2 = df2.columns[df2.columns.str.contains('clusters_')]
+
+    # Standardisation et assemblage des données pour df
+    df_scaled = np.hstack([
+        df.iloc[:, 0:1].values,  # ID du jour
+        scaler_temp.fit_transform(df.iloc[:, 1:1 + n_temp_cols]),  # Température
+        df.iloc[:, 1 + n_temp_cols:1 + n_temp_cols + 1].values,  # 'heat_on'
+        df[cluster_cols].values,  # Clusters
+        scaler_cons.fit_transform(df.iloc[:, -24:])  # Consommation
+    ])
+
+    # Standardisation et assemblage des données pour df2 (données équilibrées)
+    df_scaled2 = np.hstack([
+        df2.iloc[:, 0:1].values,  # ID du jour
+        scaler_temp.fit_transform(df2.iloc[:, 1:1 + n_temp_cols]),  # Température
+        df2.iloc[:, 1 + n_temp_cols:1 + n_temp_cols + 1].values,  # 'heat_on'
+        df2[cluster_cols2].values,  # Clusters
+        scaler_cons.fit_transform(df2.iloc[:, -24:])  # Consommation
+    ])
+
+    # Conversion des arrays numpy en DataFrames
+    df_final = pd.DataFrame(df_scaled, columns=df.columns)
+    df_final2 = pd.DataFrame(df_scaled2, columns=df2.columns)
+
+    # Extraction des valeurs numpy
+    data = df_final.values
+    data2 = df_final2.values
+    # Filtrage des jours avec ID non nul
+    data2 = data2[data2[:, 0] != 0]
+
+    # Initialisation des listes d'entrées et cibles
+    X2, y2 = [], []
+    for i in data2[:, 0]:
+        # Données du jour précédent
+        prev_data = data[data[:, 0] == i - 1, 1:]
+        # Données du jour courant avec features sélectionnées
+        current_data2 = data2[data2[:, 0] == i, 1:1 + n_temp_cols + len(cluster_cols) + 1]
+        # Assemblage des données d'entrée (t-1 et t)
+        X2.append(np.hstack([prev_data, current_data2]))
+        # Cibles pour la prédiction
+        y2.append(data2[data2[:, 0] == i, 1 + n_temp_cols + 1 + len(cluster_cols):])
+
+    # Conversion en arrays numpy
+    X2, y2 = np.array(X2), np.array(y2)
+    # Reshape pour correspondre aux dimensions attendues par le modèle LSTM
+    X2 = X2.reshape(X2.shape[0], X2.shape[2])
+    y2 = y2.reshape(y2.shape[0], y2.shape[2])
+    X2 = X2.reshape(X2.shape[0], 1, X2.shape[1])
+
+    # Séparation train/test sur les données transformées
+    idx_split = int((X2.shape[0] * 8) / 10)
+    X_train2 = X2[:idx_split, :].astype(float)
+    X_test2 = X2[idx_split:, :].astype(float)
+    y_train2 = y2[:idx_split, :].astype(float)
+    y_test2 = y2[idx_split:, :].astype(float)
+
+    # Retourne les données train/test et les scalers
+    return X_train2, X_test2, y_train2, y_test2, scaler_temp, scaler_cons
