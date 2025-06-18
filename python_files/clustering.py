@@ -21,42 +21,45 @@ def clustering(df, n_parts=1, status_column="heat_on", n_clusters_list=None):
     - status_column : colonne  indiquant si le chauffage est activé
     - n_clusters_list : liste du nombre de clusters à appliquer par partie (taille doit être = n_parts)
     
-    Retour : df avec colonnes "clusters_1", "clusters_2", ..., une pour chaque partie ou  "clusters_1" si pas de partition
+    Retour : 
+    - df avec colonnes "clusters_1", "clusters_2", ..., une pour chaque partie ou "clusters_1" si pas de partition
+    - dict centroids_dict où chaque clé "clusters_i" a pour valeur un np.array des centroïdes (moyennes) des clusters
     """
-    # Vérifie que la liste des clusters est bien fournie et cohérente avec n_parts
+    from sklearn.cluster import KMeans
+    import numpy as np
+
     if n_clusters_list is None or len(n_clusters_list) != n_parts:
         raise ValueError("Tu dois fournir une liste n_clusters_list de même longueur que n_parts.")
 
-    # Copie du DataFrame et ajout d'une colonne binaire pour le statut chauffage
     df_final = add_binary_column(df.copy(), column_name=status_column)
-    # Conversion des noms de colonnes en string
     df_final.columns = df_final.columns.astype(str)
 
-    # Liste des colonnes horaires (chaines de "0" à "23")
     hour_columns = list(map(str, range(24)))
-    # Taille de chaque segment horaire en fonction de n_parts
     step = 24 // n_parts
-    # Découpage des colonnes horaires en segments égaux
     parts_cols = [hour_columns[i * step: (i + 1) * step] for i in range(n_parts)]
 
-    # Parcours des segments et du nombre de clusters associés
+    centroids_dict = {}
+
     for i, (n_clusters, cols) in enumerate(zip(n_clusters_list, parts_cols), start=1):
-        # Sélection des colonnes horaires du segment + colonne statut
         df_part = df_final[cols + [status_column]].copy()
-        # Sélection uniquement des lignes où chauffage est activé
         df_heat = df_part[df_part[status_column] == 1].drop(columns=[status_column])
         
-        # Application du clustering K-means sur les données filtrées
         model = apply_kmeans(n_clusters=n_clusters, data=df_heat)
 
         cluster_col = f"clusters_{i}"
-        # Attribution des labels de clusters pour les lignes chauffage activé
         df_final.loc[df_part[status_column] == 1, cluster_col] = model.labels_
-        # Attribution d'un cluster hors-index pour les lignes chauffage éteint
         df_final.loc[df_part[status_column] == 0, cluster_col] = n_clusters 
 
-    # Retourne le DataFrame enrichi avec les colonnes de clusters
-    return df_final
+        # Calcul des centroïdes (moyennes) pour chaque cluster
+        centroids = []
+        for c in range(n_clusters):
+            cluster_points = df_heat.iloc[model.labels_ == c]
+            centroid = cluster_points.mean(axis=0).values
+            centroids.append(centroid)
+        centroids_dict[cluster_col] = np.array(centroids)
+
+    return df_final, centroids_dict
+
 
 
 def add_profil_and_status(input_df, conso_df, status_col="heat_on", profil_cols=None):
