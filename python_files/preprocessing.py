@@ -35,6 +35,19 @@ def add_binary_column(df, column_name="heat_on"):
     df[column_name] = (df.drop(columns=[column_name], errors='ignore').sum(axis=1) > 0).astype(int)
     return df
 
+def add_heating_season(df, date_column='Date'):
+    """
+    Ajoute une colonne 'heat_on' qui vaut 1 si la date est entre le 1er novembre et le 30 avril, sinon 0.
+
+    """ 
+    # Extraire le mois et le jour
+    month_day = df[date_column].dt.month * 100 + df[date_column].dt.day
+    
+    # Appliquer la condition: 1 si entre 1101 (1er nov) et 0430 (30 avril), sinon 0
+    df['heat'] = ((month_day >= 1101) | (month_day <= 430)).astype(int)
+    
+    return df
+
 
 
 def extract_and_store_data(files, prefix, column_index):
@@ -244,3 +257,140 @@ def preprocess_data(Text_combined, clustering_heat, Test_Text_heat, name_combine
 
     # Retourne les données train/test et les scalers
     return X_train2, X_test2, y_train2, y_test2, scaler_temp, scaler_cons
+
+
+def histogramme_moyenne(df_variable, variable_name="Variable"):
+    df = df_variable.copy()
+    df['date'] = pd.to_datetime(df['Date'])
+    df['year'] = df['date'].dt.year
+
+    hourly_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    hourly_cols.remove('year')
+    df['moyenne_journaliere'] = df[hourly_cols].mean(axis=1)
+
+    years = sorted(df['year'].unique())
+
+    # Plages fixes (3 premières) selon min et max global
+    global_min = df['moyenne_journaliere'].min()
+    global_max = df['moyenne_journaliere'].max()
+    bins_fixed = np.linspace(global_min, global_max, 5)  # 4 segments = 5 bornes
+
+    # Pour la légende : 
+    # 3 premiers segments avec bornes fixes "de X à Y"
+    # dernier segment dynamique, on affiche juste "≥ début_segment_4"
+    legend_labels = [
+        f"{bins_fixed[i]:.1f} – {bins_fixed[i+1]:.1f}" for i in range(3)
+    ] + [f"≥ {bins_fixed[3]:.1f} (variable)"]
+
+    data_percents = []
+    labels = []
+
+    for year in years:
+        moyennes = df[df['year'] == year]['moyenne_journaliere'].dropna()
+        max_year = moyennes.max()
+
+        # Construire les bins pour cette année : 3 premiers fixes + dernier segment dynamique
+        bins_year = list(bins_fixed[:4]) + [max_year]
+
+        counts, _ = np.histogram(moyennes, bins=bins_year)
+        total = counts.sum()
+        percents = (counts / total * 100) if total > 0 else np.zeros(len(counts))
+
+        data_percents.append(percents)
+        labels.append(year)
+
+    df_percents = pd.DataFrame(data_percents, columns=legend_labels, index=labels)
+
+    colors = ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728']
+
+    ax = df_percents.plot(kind='bar', stacked=True, color=colors, figsize=(12, 7))
+
+    for i, percents in enumerate(data_percents):
+        bottom = 0
+        for j, pct in enumerate(percents):
+            if pct > 0:
+                ax.text(i, bottom + pct / 2, f"{pct:.1f}%", ha='center', va='center',
+                        fontsize=9, color='white', fontweight='bold')
+                bottom += pct
+
+    ax.set_xlabel("Année")
+    ax.set_ylabel("Pourcentage de jours")
+    ax.set_title(f"Distribution annuelle de {variable_name} en 4 plages (dernier segment dynamique)")
+    ax.legend(title="Plages (3 fixes + dernier variable)", title_fontsize=10)
+
+    plt.tight_layout()
+    plt.show()
+
+ 
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+def histogramme_somme_journaliere(df_variable, variable_name="Variable"):
+    df = df_variable.copy()
+    df['date'] = pd.to_datetime(df['Date'])
+    df['year'] = df['date'].dt.year
+
+    # Sélection des colonnes numériques sauf 'year'
+    hourly_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    if 'year' in hourly_cols:
+        hourly_cols.remove('year')
+
+    # Somme journalière (au lieu de moyenne)
+    df['somme_journaliere'] = df[hourly_cols].sum(axis=1)
+
+    years = sorted(df['year'].unique())
+
+    # Plages fixes (3 premières) selon min et max global
+    global_min = df['somme_journaliere'].min()
+    global_max = df['somme_journaliere'].max()
+    bins_fixed = np.linspace(global_min, global_max, 5)  # 4 segments = 5 bornes
+
+    # Pour la légende : 3 premiers segments fixes + dernier dynamique
+    legend_labels = [
+        f"{bins_fixed[i]:.1f} – {bins_fixed[i+1]:.1f}" for i in range(3)
+    ] + [f"≥ {bins_fixed[3]:.1f} (variable)"]
+
+    data_percents = []
+    labels = []
+
+    for year in years:
+        sommes = df[df['year'] == year]['somme_journaliere'].dropna()
+        max_year = sommes.max()
+
+        # S'assurer que max_year est >= dernier bord fixe pour éviter erreur bins
+        if max_year < bins_fixed[3]:
+            max_year = bins_fixed[3]
+
+        bins_year = list(bins_fixed[:4]) + [max_year]
+
+        counts, _ = np.histogram(sommes, bins=bins_year)
+        total = counts.sum()
+        percents = (counts / total * 100) if total > 0 else np.zeros(len(counts))
+
+        data_percents.append(percents)
+        labels.append(year)
+
+    df_percents = pd.DataFrame(data_percents, columns=legend_labels, index=labels)
+
+    colors = ['#1f77b4', '#2ca02c', '#ff7f0e', '#d62728']
+
+    ax = df_percents.plot(kind='bar', stacked=True, color=colors, figsize=(12, 7))
+
+    for i, percents in enumerate(data_percents):
+        bottom = 0
+        for j, pct in enumerate(percents):
+            if pct > 0:
+                ax.text(i, bottom + pct / 2, f"{pct:.1f}%", ha='center', va='center',
+                        fontsize=9, color='white', fontweight='bold')
+                bottom += pct
+
+    ax.set_xlabel("Année")
+    ax.set_ylabel("Pourcentage de jours")
+    ax.set_title(f"Distribution annuelle de {variable_name} en 4 plages (dernier segment dynamique)")
+    ax.legend(title="Plages (3 fixes + dernier variable)", title_fontsize=10)
+
+    plt.tight_layout()
+    plt.show()
+
+    return df_percents

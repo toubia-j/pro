@@ -21,13 +21,13 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.svm import SVC
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.preprocessing import StandardScaler, MultiLabelBinarizer
+from sklearn.preprocessing import StandardScaler, MultiLabelBinarizer,MinMaxScaler
+
 from sklearn.multioutput import MultiOutputClassifier
 
 from tslearn.clustering import TimeSeriesKMeans
 
-from keras.callbacks import EarlyStopping
-from keras.models import Sequential
-from keras.layers import SimpleRNN, Dense, Dropout, LSTM
-from tensorflow.keras.layers import Conv1D, MaxPooling1D, Conv2D, MaxPooling2D, Flatten, Reshape
 import tensorflow as tf
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import SimpleRNN, Dense, Dropout, LSTM, Conv1D, MaxPooling1D, Conv2D, MaxPooling2D, Flatten, Reshape
